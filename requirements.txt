@@ -2,4 +2,6 @@ plotly
 pandas
 openpyxl
 streamlit
-xlrd
+xlrd  # For .xls file support
+numpy
+altair # New addition
