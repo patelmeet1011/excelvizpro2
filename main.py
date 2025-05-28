@@ -1,371 +1,501 @@
 import streamlit as st
 import pandas as pd
 import plotly.express as px
-import plotly.graph_objects as go
-import io
+import plotly.graph_objects as go # Kept for potential future use, though px is primary
 import base64
+import io
 
-# --- Page Configuration ---
+# --- Page Configuration (Should be the first Streamlit command) ---
 st.set_page_config(
-    page_title="DataViz Pro 📊",
-    page_icon="📊",
-    layout="wide",
-    initial_sidebar_state="expanded"
+    page_title='ExcelViz Pro - Master Edition',
+    page_icon='🌠', # Even more stellar icon!
+    layout='wide',
+    initial_sidebar_state='expanded'
 )
 
-# --- Helper Functions ---
-
-@st.cache_data(ttl=3600) # Cache data loading for 1 hour
-def load_data(uploaded_file, sheet_name=None):
-    """Loads data from various file types."""
-    try:
-        file_extension = uploaded_file.name.split('.')[-1].lower()
-        if file_extension == 'xlsx':
-            xls = pd.ExcelFile(uploaded_file)
-            sheet_names = xls.sheet_names
-            if sheet_name:
-                return pd.read_excel(xls, sheet_name=sheet_name), sheet_names
-            return pd.read_excel(xls, sheet_name=sheet_names[0]), sheet_names # Load first sheet by default
-        elif file_extension == 'csv':
-            return pd.read_csv(uploaded_file), None
-        elif file_extension == 'tsv':
-            return pd.read_csv(uploaded_file, sep='\t'), None
-        elif file_extension == 'json':
-            return pd.read_json(uploaded_file), None
-        else:
-            st.error(f"Unsupported file format: {file_extension}")
-            return None, None
-    except Exception as e:
-        st.error(f"Error loading file: {e}")
-        return None, None
-
-def generate_download_link(df_or_fig, filename, text, is_figure=False):
-    """Generates a download link for DataFrames (as CSV) or Plotly figures (as HTML)."""
-    try:
-        if is_figure:
-            buffer = io.StringIO()
-            df_or_fig.write_html(buffer, include_plotlyjs="cdn")
-            data_bytes = buffer.getvalue().encode()
-            mime_type = "text/html"
-        else: # DataFrame
-            csv = df_or_fig.to_csv(index=False).encode()
-            data_bytes = csv
-            mime_type = "text/csv"
-
-        b64 = base64.b64encode(data_bytes).decode()
-        href = f'<a href="data:{mime_type};base64,{b64}" download="{filename}">{text}</a>'
-        return href
-    except Exception as e:
-        st.error(f"Error generating download link: {e}")
-        return ""
-
-def get_column_types(df):
-    """Separates columns by their general data type."""
-    numeric_cols = df.select_dtypes(include=['number']).columns.tolist()
-    categorical_cols = df.select_dtypes(include=['object', 'category', 'boolean']).columns.tolist()
-    datetime_cols = df.select_dtypes(include=['datetime']).columns.tolist()
-    return numeric_cols, categorical_cols, datetime_cols
-
 # --- Initialize Session State ---
+# Ensures variables persist across reruns and user interactions.
 if 'df' not in st.session_state:
     st.session_state.df = None
-if 'processed_df' not in st.session_state:
-    st.session_state.processed_df = None
-if 'sheet_names' not in st.session_state:
-    st.session_state.sheet_names = None
-if 'selected_sheet' not in st.session_state:
-    st.session_state.selected_sheet = None
+if 'uploaded_file_name' not in st.session_state:
+    st.session_state.uploaded_file_name = None
+if 'chart_options' not in st.session_state: # Stores user's last choices for chart elements
+    st.session_state.chart_options = {}
+if 'last_chart_type' not in st.session_state: # To help manage option resets if chart type changes
+    st.session_state.last_chart_type = ""
 
-# --- Sidebar for File Upload and Sheet Selection ---
+# --- Styling (from style.css and general improvements) ---
+PRIMARY_COLOR = "#1a7707" # Green from your style.css
+SECONDARY_COLOR = "#1605b1" # A blue from button style in style.css
+TEXT_COLOR_DARK = "#333333"
+BACKGROUND_COLOR_LIGHT = "#f8f9fa" # A light, clean background
+ACCENT_BACKGROUND = "#e9f5e9" # Light green accent
+
+custom_css = f"""
+<style>
+    /* General App Styling */
+    .stApp {{
+        /* background-color: {BACKGROUND_COLOR_LIGHT}; */ /* Optional: uncomment for a light app background */
+    }}
+
+    /* Sidebar Styling */
+    .css-1d391kg {{ /* Sidebar main class, might change with Streamlit versions */
+        background-color: {BACKGROUND_COLOR_LIGHT};
+        border-right: 1px solid #ddd;
+    }}
+
+    /* Button Styling */
+    .stButton>button {{
+        border: 1px solid {PRIMARY_COLOR};
+        background-color: white;
+        color: {PRIMARY_COLOR};
+        padding: 0.4rem 0.8rem;
+        border-radius: 8px; /* Softer radius from your style.css '10px' */
+        transition: all 0.3s ease-in-out;
+        font-weight: 500;
+    }}
+    .stButton>button:hover {{
+        border-color: {SECONDARY_COLOR};
+        background-color: {ACCENT_BACKGROUND};
+        color: {PRIMARY_COLOR};
+    }}
+    .stButton>button:active {{ /* For a click effect */
+        background-color: {PRIMARY_COLOR};
+        color: white;
+    }}
+
+    /* Headers */
+    h1, h2 {{
+        color: {PRIMARY_COLOR};
+        font-family: 'Poppins', sans-serif; /* Assuming Poppins is available */
+    }}
+    h3 {{
+        color: {TEXT_COLOR_DARK};
+        font-family: 'Poppins', sans-serif;
+    }}
+
+    /* Markdown links */
+    .stMarkdown a {{
+        color: {SECONDARY_COLOR};
+        text-decoration: none;
+    }}
+    .stMarkdown a:hover {{
+        text-decoration: underline;
+        color: {PRIMARY_COLOR};
+    }}
+
+    /* File Uploader */
+    .stFileUploader label {{
+        background-color: {ACCENT_BACKGROUND};
+        border: 2px dashed {PRIMARY_COLOR};
+        padding: 1rem;
+        border-radius: 8px;
+        text-align: center;
+        transition: all 0.3s ease-in-out;
+    }}
+    .stFileUploader label:hover {{
+        border-color: {SECONDARY_COLOR};
+        background-color: #d4eed4; /* Slightly darker green on hover */
+    }}
+
+    /* Expander header */
+    .streamlit-expanderHeader {{
+        font-size: 1.1rem;
+        color: {PRIMARY_COLOR};
+    }}
+</style>
+"""
+st.markdown(custom_css, unsafe_allow_html=True)
+
+# --- Utility Function for Plot Download ---
+def generate_html_download_link(fig, filename="plot.html"):
+    try:
+        buffer = io.StringIO()
+        fig.write_html(buffer, include_plotlyjs="cdn")
+        html_bytes = buffer.getvalue().encode()
+        b64 = base64.b64encode(html_bytes).decode()
+        # Styled download button
+        button_style = f"background-color:{PRIMARY_COLOR};color:white;padding:10px 15px;text-align:center;text-decoration:none;display:inline-block;border-radius:8px;border:none;font-weight:500;transition:all 0.3s ease;"
+        hover_style = f"background-color:{SECONDARY_COLOR};" # Simple hover change
+        
+        href = f'<a href="data:text/html;charset=utf-8;base64,{b64}" download="{filename}" style="{button_style}" onmouseover="this.style.backgroundColor=\'{SECONDARY_COLOR}\'" onmouseout="this.style.backgroundColor=\'{PRIMARY_COLOR}\'">Download Plot as HTML</a>'
+        return st.markdown(href, unsafe_allow_html=True)
+    except Exception as e:
+        st.error(f"Error generating download link: {e}")
+        return None
+
+# --- Helper function to get sticky selections ---
+def get_selection(chart_type_key, param_key, default_value=None, options_list=None):
+    """Retrieves a stored selection for a chart parameter or returns a default."""
+    if chart_type_key in st.session_state.chart_options:
+        value = st.session_state.chart_options[chart_type_key].get(param_key, default_value)
+        # Validate if the stored value is still valid within current options_list
+        if options_list and value not in options_list:
+            if default_value in options_list: # Fallback to default if it's valid
+                return default_value
+            elif options_list: # Fallback to first option if default is also invalid
+                return options_list[0]
+        return value
+    return default_value
+
+
+# --- Sidebar ---
 with st.sidebar:
-    st.title("🖼️ DataViz Pro")
-    st.markdown("Upload your data file and explore visualizations.")
+    # --- Logo ---
+    # Option 1: If you have a logo.png deployed with your app in an 'images' folder:
+    # st.image("images/logo.png", width=150)
+    # Option 2: Placeholder (replace with your actual logo URL if hosted)
+    st.markdown(f"<p style='text-align:center;'><img src='https://www.gstatic.com/images/branding/googlelogo/svg/googlelogo_clr_74x24px.svg' alt='ExcelVizPro Logo Placeholder' width='120'></p>", unsafe_allow_html=True)
+    st.markdown(f"<h1 style='color: {PRIMARY_COLOR}; text-align: center; margin-top:0px;'>ExcelViz Pro</h1>", unsafe_allow_html=True) # Title from index.html
+    st.markdown("---")
 
+    # --- File Uploader ---
+    st.header("📤 Upload Data")
     uploaded_file = st.file_uploader(
-        "Choose a data file",
+        'Choose a file (XLSX, CSV, TSV, JSON)',
         type=['xlsx', 'csv', 'tsv', 'json'],
-        help="Supports Excel, CSV, TSV, and JSON files."
+        help="Supports Excel, CSV, TSV, and JSON (array of objects or record-oriented) files."
     )
 
     if uploaded_file:
-        if st.session_state.df is None or st.session_state.get('uploaded_file_name') != uploaded_file.name:
-            st.session_state.uploaded_file_name = uploaded_file.name # track filename
-            df_loaded, sheet_names_loaded = load_data(uploaded_file)
-            st.session_state.df = df_loaded
-            st.session_state.processed_df = df_loaded.copy() if df_loaded is not None else None
-            st.session_state.sheet_names = sheet_names_loaded
-            st.session_state.selected_sheet = sheet_names_loaded[0] if sheet_names_loaded else None
+        # Process file if it's new or df is not loaded
+        if st.session_state.uploaded_file_name != uploaded_file.name or st.session_state.df is None:
+            st.session_state.uploaded_file_name = uploaded_file.name
+            st.session_state.df = None  # Reset dataframe for new file
+            st.session_state.chart_options = {} # Reset all stored chart options
+            try:
+                file_extension = uploaded_file.name.split('.')[-1].lower()
+                if file_extension == 'xlsx':
+                    st.session_state.df = pd.read_excel(uploaded_file, engine='openpyxl')
+                elif file_extension == 'csv':
+                    st.session_state.df = pd.read_csv(uploaded_file)
+                elif file_extension == 'tsv':
+                    st.session_state.df = pd.read_csv(uploaded_file, sep='\t')
+                elif file_extension == 'json':
+                    st.session_state.df = pd.read_json(uploaded_file, orient='records', lines=True, nonstandard_ όπως='float') # More robust JSON parsing
+                st.success(f"File '{uploaded_file.name}' loaded!")
+            except Exception as e:
+                st.error(f"Error loading file: {str(e)}")
+                st.session_state.df = None # Ensure df is None on error
+    
+    st.markdown("---")
 
-        if st.session_state.sheet_names and len(st.session_state.sheet_names) > 1:
-            st.session_state.selected_sheet = st.selectbox(
-                "Select Excel Sheet",
-                st.session_state.sheet_names,
-                index=st.session_state.sheet_names.index(st.session_state.selected_sheet) if st.session_state.selected_sheet in st.session_state.sheet_names else 0
-            )
-            if st.session_state.selected_sheet:
-                # Reload data if sheet selection changes
-                current_df_sheet_check, _ = load_data(uploaded_file, st.session_state.selected_sheet)
-                # Check if dataframe from selected sheet is different from current df
-                # This simple check might not be robust enough for all cases.
-                # A more robust check would compare column names and dtypes or even content.
-                if not st.session_state.df.equals(current_df_sheet_check):
-                    st.session_state.df, _ = load_data(uploaded_file, st.session_state.selected_sheet)
-                    st.session_state.processed_df = st.session_state.df.copy() if st.session_state.df is not None else None
-                    st.experimental_rerun()
+    # --- About & Help Section ---
+    st.header("ℹ️ About & Help")
+    with st.expander("About ExcelViz Pro", expanded=False):
+        # Content from about.html, README.md, blog.html
+        st.markdown("""
+            **ExcelViz Pro** empowers you to effortlessly transform raw data into compelling, insightful visualizations. Upload your spreadsheet files and explore a diverse range of chart types to uncover hidden trends and patterns.
+
+            * **Our Mission**: To make data visualization accessible, intuitive, and enjoyable for everyone, from students to professionals.
+            * **The Team**: Developed by dedicated students for the IT485 course: Ameer Alshrafi, Meet Patel, Biruk Tadesse, Wayne Zhang, and Shubh Patel.
+            * **Project Links**: 
+                * [GitHub Repository](https://patelmeet1011.github.io/ExcelVizProIt485/)
+                * [Visualizer App (Direct)](https://excelvizproo.streamlit.app/)
+        """)
+    with st.expander("Frequently Asked Questions (FAQs)", expanded=False):
+        # Content from feedbackform.html
+        st.markdown("""
+        **Q: How do I use ExcelVizPro?**
+        A: Simply upload your data file using the 'Upload Data' section in the sidebar. Once loaded, data insights and visualization options will appear in the main panel. Select a chart type and configure its options to generate your plot.
+
+        **Q: What kind of graphs can I visualize?**
+        A: ExcelVizPro supports a wide array of visualizations including Line Charts, Bar Charts, Pie Charts, Scatter Plots, Histograms, Box Plots, Area Charts, Funnel Charts, Sunburst Charts, Treemaps, Correlation Heatmaps, and Geographical Maps.
+
+        **Q: Is my uploaded information private?**
+        A: Your data is processed in your browser and/or on the server for visualization purposes only during your session. We are committed to user privacy and do not store or share your uploaded data files.
+        """)
+    
+    st.markdown("---")
+    st.markdown(f"<p style='text-align: center; color: {TEXT_COLOR_DARK}; font-size: 0.9em;'>© 2023-2024 ExcelVizPro Team</p>", unsafe_allow_html=True) # Footer from index.html
+
+# --- Main Content Area ---
+if st.session_state.df is not None:
+    df = st.session_state.df # Make df readily available
+    st.header("📊 Interactive Data Visualizer")
+    st.markdown(f"Visualizing: **{st.session_state.uploaded_file_name}** (`{df.shape[0]}` rows, `{df.shape[1]}` columns)")
+
+    # --- Data Preview and Basic Analysis ---
+    with st.expander("🧐 Data Preview & Quick Insights", expanded=False):
+        st.dataframe(df.head())
+        st.subheader("Descriptive Statistics (Numeric Columns)")
+        numeric_cols_desc = df.select_dtypes(include=['number'])
+        if not numeric_cols_desc.empty:
+            st.dataframe(numeric_cols_desc.describe().transpose(), use_container_width=True)
+        else:
+            st.info("No numeric columns found for descriptive statistics.")
+        st.subheader("Column Data Types")
+        st.dataframe(df.dtypes.astype(str).rename("Data Type"), use_container_width=True)
+
+    st.markdown("---")
+    st.subheader("⚙️ Configure Your Visualization")
+
+    # --- Chart Type and Theme Selection ---
+    control_col1, control_col2 = st.columns([3, 2]) # Give more space to chart type
+    with control_col1:
+        chart_type = st.selectbox(
+            "Select Chart Type:",
+            [
+                "Line Chart", "Bar Chart", "Pie Chart", "Scatter Plot", "Histogram", "Box Plot", 
+                "Area Chart", "Funnel Chart", "Sunburst Chart", "Treemap", 
+                "Map (Geographical)", "Correlation Heatmap"
+            ],
+            key='chart_type_selector',
+            index=0 # Default selection
+        )
+    with control_col2:
+        plotly_theme = st.selectbox(
+            "Select Plotly Theme:",
+            ["plotly", "plotly_white", "plotly_dark", "ggplot2", "seaborn", "simple_white", None],
+            key='plotly_theme_selector',
+            index=1 # Default to plotly_white
+        )
+    
+    # Reset specific chart options if chart type changes to avoid incompatible old settings
+    if st.session_state.last_chart_type != chart_type:
+        st.session_state.chart_options[chart_type] = {} # Initialize/reset options for the new chart type
+        st.session_state.last_chart_type = chart_type
 
 
-    if st.session_state.processed_df is not None:
-        st.markdown("---")
-        st.markdown(generate_download_link(st.session_state.processed_df, "processed_data.csv", "📥 Download Processed Data (CSV)"), unsafe_allow_html=True)
+    # --- Advanced Chart Customization Inputs ---
+    st.markdown("**Advanced Customization:**")
+    cust_col1, cust_col2, cust_col3 = st.columns(3)
+    default_title = f"{chart_type} of {st.session_state.uploaded_file_name.split('.')[0]}"
+    with cust_col1:
+        chart_title = st.text_input("Chart Title:", 
+                                    value=get_selection(chart_type, "chart_title", default_title), 
+                                    key=f'{chart_type}_title_input')
+    with cust_col2:
+        x_axis_label_val = st.text_input("X-Axis Label (Optional):", 
+                                       value=get_selection(chart_type, "x_axis_label", ""), 
+                                       key=f'{chart_type}_x_label_input')
+    with cust_col3:
+        y_axis_label_val = st.text_input("Y-Axis Label (Optional):", 
+                                       value=get_selection(chart_type, "y_axis_label", ""), 
+                                       key=f'{chart_type}_y_label_input')
 
-    st.sidebar.markdown("---")
-    st.sidebar.info("Built with Streamlit & Plotly.")
+    # --- Dynamic Column Selection and Plotting Logic ---
+    fig = None
+    all_columns = df.columns.tolist()
+    numeric_columns = df.select_dtypes(include=['number']).columns.tolist()
+    categorical_columns = df.select_dtypes(include=['object', 'category', 'boolean']).columns.tolist() # Include boolean as categorical
 
-# --- Main Application Area ---
-if st.session_state.processed_df is None:
-    st.info("Please upload a data file using the sidebar to get started.")
-    st.image("https://streamlit.io/images/brand/streamlit-logo-secondary-colormark-darktext.png", width=300)
+    # Ensure options dict exists for current chart type
+    if chart_type not in st.session_state.chart_options:
+        st.session_state.chart_options[chart_type] = {}
+    
+    current_chart_opts = st.session_state.chart_options[chart_type]
+    
+    # Common plot arguments, to be updated by specific chart logic
+    plot_kwargs = {"title": chart_title, "template": plotly_theme, "labels": {}}
+
+    # Function to safely get first element or None
+    def first_or_none(lst): return lst[0] if lst else None
+    def second_or_none(lst): return lst[1] if len(lst) > 1 else None
+    
+    # --- Chart Specific Controls ---
+    # This section will contain the logic for each chart type
+    # (Continuing the pattern from previous versions, making it more complete)
+    
+    st.markdown("---") # Visual separator for chart-specific controls
+    st.write(f"**Options for: {chart_type}**")
+
+    if not all_columns:
+        st.warning("The uploaded data frame has no columns. Please check your file.")
+    else:
+        # Line Chart
+        if chart_type == "Line Chart":
+            cc1, cc2, cc3 = st.columns(3)
+            with cc1: x_col = st.selectbox("X-Axis:", [None] + all_columns, key=f'{chart_type}_x', index=([None] + all_columns).index(get_selection(chart_type, "x_col", first_or_none(all_columns), [None] + all_columns)))
+            with cc2: y_cols = st.multiselect("Y-Axis (Numeric):", numeric_columns, key=f'{chart_type}_y', default=get_selection(chart_type, "y_cols", [first_or_none(numeric_columns)] if numeric_columns else [], numeric_columns))
+            with cc3: color_col = st.selectbox("Color by (Categorical, Optional):", [None] + categorical_columns, key=f'{chart_type}_color', index=([None] + categorical_columns).index(get_selection(chart_type, "color_col", None, [None] + categorical_columns)))
+            if x_col and y_cols:
+                current_chart_opts.update({"x_col": x_col, "y_cols": y_cols, "color_col": color_col, "chart_title": chart_title, "x_axis_label": x_axis_label_val, "y_axis_label": y_axis_label_val})
+                if x_axis_label_val: plot_kwargs["labels"][x_col] = x_axis_label_val
+                # Y-axis label for multiple y_cols is tricky, Plotly handles it by default or it can be a generic one.
+                if y_axis_label_val and len(y_cols) == 1: plot_kwargs["labels"][y_cols[0]] = y_axis_label_val
+                elif y_axis_label_val: plot_kwargs["labels"]["value"] = y_axis_label_val # Generic for multiple lines
+                try: fig = px.line(df, x=x_col, y=y_cols, color=color_col, **plot_kwargs)
+                except Exception as e: st.error(f"Error creating Line Chart: {e}")
+        
+        # Bar Chart
+        elif chart_type == "Bar Chart":
+            cc1, cc2, cc3, cc4 = st.columns(4)
+            with cc1: x_col = st.selectbox("X-Axis (Categorical/Dimension):", all_columns, key=f'{chart_type}_x', index=all_columns.index(get_selection(chart_type, "x_col", first_or_none(categorical_columns) or first_or_none(all_columns), all_columns)))
+            with cc2: y_col = st.selectbox("Y-Axis (Numeric/Measure):", numeric_columns, key=f'{chart_type}_y', index=numeric_columns.index(get_selection(chart_type, "y_col", first_or_none(numeric_columns), numeric_columns)) if numeric_columns else 0)
+            with cc3: color_col = st.selectbox("Color by (Categorical, Optional):", [None] + categorical_columns, key=f'{chart_type}_color', index=([None] + categorical_columns).index(get_selection(chart_type, "color_col", None, [None] + categorical_columns)))
+            with cc4: barmode = st.selectbox("Bar Mode:", ["group", "stack", "relative"], key=f'{chart_type}_barmode', index=["group", "stack", "relative"].index(get_selection(chart_type, "barmode", "group")))
+            if x_col and y_col:
+                current_chart_opts.update({"x_col": x_col, "y_col": y_col, "color_col": color_col, "barmode": barmode, "chart_title": chart_title, "x_axis_label": x_axis_label_val, "y_axis_label": y_axis_label_val})
+                if x_axis_label_val: plot_kwargs["labels"][x_col] = x_axis_label_val
+                if y_axis_label_val: plot_kwargs["labels"][y_col] = y_axis_label_val
+                try: fig = px.bar(df, x=x_col, y=y_col, color=color_col, barmode=barmode, **plot_kwargs)
+                except Exception as e: st.error(f"Error creating Bar Chart: {e}")
+
+        # Pie Chart
+        elif chart_type == "Pie Chart":
+            cc1, cc2 = st.columns(2)
+            with cc1: names_col = st.selectbox("Labels/Names (Categorical):", categorical_columns, key=f'{chart_type}_names', index=categorical_columns.index(get_selection(chart_type, "names_col", first_or_none(categorical_columns), categorical_columns)) if categorical_columns else 0)
+            with cc2: values_col = st.selectbox("Values (Numeric):", numeric_columns, key=f'{chart_type}_values', index=numeric_columns.index(get_selection(chart_type, "values_col", first_or_none(numeric_columns), numeric_columns)) if numeric_columns else 0)
+            if names_col and values_col:
+                current_chart_opts.update({"names_col": names_col, "values_col": values_col, "chart_title": chart_title})
+                # Pie charts don't typically have x/y axis labels in the same way. Title is primary.
+                try: fig = px.pie(df, names=names_col, values=values_col, **plot_kwargs)
+                except Exception as e: st.error(f"Error creating Pie Chart: {e}")
+        
+        # Scatter Plot
+        elif chart_type == "Scatter Plot":
+            cc1, cc2, cc3, cc4 = st.columns(4)
+            with cc1: x_col = st.selectbox("X-Axis (Numeric):", numeric_columns, key=f'{chart_type}_x', index=numeric_columns.index(get_selection(chart_type, "x_col", first_or_none(numeric_columns), numeric_columns)) if numeric_columns else 0)
+            with cc2: y_col = st.selectbox("Y-Axis (Numeric):", numeric_columns, key=f'{chart_type}_y', index=numeric_columns.index(get_selection(chart_type, "y_col", second_or_none(numeric_columns) or first_or_none(numeric_columns), numeric_columns)) if numeric_columns else 0)
+            with cc3: color_col = st.selectbox("Color by (Optional):", [None] + all_columns, key=f'{chart_type}_color', index=([None] + all_columns).index(get_selection(chart_type, "color_col", None, [None] + all_columns)))
+            with cc4: size_col = st.selectbox("Size by (Numeric, Optional):", [None] + numeric_columns, key=f'{chart_type}_size', index=([None] + numeric_columns).index(get_selection(chart_type, "size_col", None, [None] + numeric_columns)))
+            if x_col and y_col:
+                current_chart_opts.update({"x_col": x_col, "y_col": y_col, "color_col": color_col, "size_col": size_col, "chart_title": chart_title, "x_axis_label": x_axis_label_val, "y_axis_label": y_axis_label_val})
+                if x_axis_label_val: plot_kwargs["labels"][x_col] = x_axis_label_val
+                if y_axis_label_val: plot_kwargs["labels"][y_col] = y_axis_label_val
+                try: fig = px.scatter(df, x=x_col, y=y_col, color=color_col, size=size_col, **plot_kwargs)
+                except Exception as e: st.error(f"Error creating Scatter Plot: {e}")
+
+        # Histogram
+        elif chart_type == "Histogram":
+            cc1, cc2, cc3 = st.columns(3)
+            with cc1: x_col = st.selectbox("Data Column (Numeric):", numeric_columns, key=f'{chart_type}_x', index=numeric_columns.index(get_selection(chart_type, "x_col", first_or_none(numeric_columns), numeric_columns)) if numeric_columns else 0)
+            with cc2: color_col = st.selectbox("Color by (Categorical, Optional):", [None] + categorical_columns, key=f'{chart_type}_color', index=([None] + categorical_columns).index(get_selection(chart_type, "color_col", None, [None] + categorical_columns)))
+            with cc3: nbins = st.slider("Number of Bins:", 5, 100, value=get_selection(chart_type, "nbins", 20), key=f'{chart_type}_nbins')
+            if x_col:
+                current_chart_opts.update({"x_col": x_col, "color_col": color_col, "nbins": nbins, "chart_title": chart_title, "x_axis_label": x_axis_label_val})
+                if x_axis_label_val: plot_kwargs["labels"][x_col] = x_axis_label_val
+                # Y-axis for histogram is usually 'count' or 'density'.
+                if y_axis_label_val: plot_kwargs["labels"]["y"] = y_axis_label_val # Placeholder, might need histfunc
+                try: fig = px.histogram(df, x=x_col, color=color_col, nbins=nbins, **plot_kwargs)
+                except Exception as e: st.error(f"Error creating Histogram: {e}")
+
+        # Box Plot
+        elif chart_type == "Box Plot":
+            cc1, cc2, cc3 = st.columns(3)
+            with cc1: y_cols = st.multiselect("Data Columns (Numeric):", numeric_columns, key=f'{chart_type}_y', default=get_selection(chart_type, "y_cols", [first_or_none(numeric_columns)] if numeric_columns else [], numeric_columns))
+            with cc2: x_col = st.selectbox("Group by (Categorical, Optional):", [None] + categorical_columns, key=f'{chart_type}_x', index=([None] + categorical_columns).index(get_selection(chart_type, "x_col", None, [None] + categorical_columns)))
+            with cc3: color_col = st.selectbox("Color by (if grouping, Optional):", [None] + categorical_columns, key=f'{chart_type}_color', index=([None] + categorical_columns).index(get_selection(chart_type, "color_col", None, [None] + categorical_columns))) # Often same as x_col
+            if y_cols:
+                current_chart_opts.update({"y_cols": y_cols, "x_col": x_col, "color_col": color_col, "chart_title": chart_title, "x_axis_label": x_axis_label_val})
+                if x_axis_label_val and x_col: plot_kwargs["labels"][x_col] = x_axis_label_val
+                if y_axis_label_val: plot_kwargs["labels"]["value"] = y_axis_label_val # Generic y-label
+                try: fig = px.box(df, y=y_cols, x=x_col, color=color_col if x_col else None, **plot_kwargs)
+                except Exception as e: st.error(f"Error creating Box Plot: {e}")
+        
+        # Area Chart
+        elif chart_type == "Area Chart":
+            cc1, cc2, cc3 = st.columns(3)
+            with cc1: x_col = st.selectbox("X-Axis:", [None] + all_columns, key=f'{chart_type}_x', index=([None] + all_columns).index(get_selection(chart_type, "x_col", first_or_none(all_columns), [None] + all_columns)))
+            with cc2: y_cols = st.multiselect("Y-Axis (Numeric):", numeric_columns, key=f'{chart_type}_y', default=get_selection(chart_type, "y_cols", [first_or_none(numeric_columns)] if numeric_columns else [], numeric_columns))
+            with cc3: color_col = st.selectbox("Color/Group by (Categorical, Optional):", [None] + categorical_columns, key=f'{chart_type}_color', index=([None] + categorical_columns).index(get_selection(chart_type, "color_col", None, [None] + categorical_columns)))
+            if x_col and y_cols:
+                current_chart_opts.update({"x_col": x_col, "y_cols": y_cols, "color_col": color_col, "chart_title": chart_title, "x_axis_label": x_axis_label_val, "y_axis_label": y_axis_label_val})
+                if x_axis_label_val: plot_kwargs["labels"][x_col] = x_axis_label_val
+                if y_axis_label_val and len(y_cols) == 1: plot_kwargs["labels"][y_cols[0]] = y_axis_label_val
+                elif y_axis_label_val : plot_kwargs["labels"]["value"] = y_axis_label_val
+                try: fig = px.area(df, x=x_col, y=y_cols, color=color_col, **plot_kwargs)
+                except Exception as e: st.error(f"Error creating Area Chart: {e}")
+
+        # Funnel Chart
+        elif chart_type == "Funnel Chart":
+            st.info("For Funnel Charts, select a column representing stages and a column for corresponding values. Data should ideally be sorted by stage progression.")
+            cc1, cc2 = st.columns(2)
+            with cc1: y_stages_col = st.selectbox("Stages Column (Categorical):", categorical_columns, key=f'{chart_type}_ystages', index=categorical_columns.index(get_selection(chart_type, "y_stages_col", first_or_none(categorical_columns), categorical_columns)) if categorical_columns else 0)
+            with cc2: x_values_col = st.selectbox("Values Column (Numeric):", numeric_columns, key=f'{chart_type}_xvalues', index=numeric_columns.index(get_selection(chart_type, "x_values_col", first_or_none(numeric_columns), numeric_columns)) if numeric_columns else 0)
+            if y_stages_col and x_values_col:
+                current_chart_opts.update({"y_stages_col": y_stages_col, "x_values_col": x_values_col, "chart_title": chart_title})
+                # Labels are less conventional here, title is key.
+                try: fig = px.funnel(df, y=y_stages_col, x=x_values_col, **plot_kwargs)
+                except Exception as e: st.error(f"Error creating Funnel Chart: {e}")
+
+        # Sunburst Chart
+        elif chart_type == "Sunburst Chart":
+            st.info("Select a path of categorical columns (from root to leaves for hierarchy) and a numeric values column.")
+            cc1, cc2 = st.columns(2)
+            with cc1: path_cols = st.multiselect("Path Columns (Categorical, Hierarchical):", categorical_columns, key=f'{chart_type}_path', default=get_selection(chart_type, "path_cols", [first_or_none(categorical_columns), second_or_none(categorical_columns)] if len(categorical_columns) > 1 else [first_or_none(categorical_columns)] if categorical_columns else [], categorical_columns))
+            with cc2: values_col = st.selectbox("Values Column (Numeric):", numeric_columns, key=f'{chart_type}_values', index=numeric_columns.index(get_selection(chart_type, "values_col", first_or_none(numeric_columns), numeric_columns)) if numeric_columns else 0)
+            if path_cols and values_col:
+                current_chart_opts.update({"path_cols": path_cols, "values_col": values_col, "chart_title": chart_title})
+                try: fig = px.sunburst(df, path=path_cols, values=values_col, **plot_kwargs)
+                except Exception as e: st.error(f"Error creating Sunburst Chart: {e}. Ensure path columns form a valid hierarchy and values are numeric.")
+
+        # Treemap
+        elif chart_type == "Treemap":
+            st.info("Similar to Sunburst: select hierarchical path columns and a values column. Optionally, a color column.")
+            cc1, cc2, cc3 = st.columns(3)
+            with cc1: path_cols = st.multiselect("Path Columns (Categorical, Hierarchical):", categorical_columns, key=f'{chart_type}_path', default=get_selection(chart_type, "path_cols", [first_or_none(categorical_columns), second_or_none(categorical_columns)] if len(categorical_columns) > 1 else [first_or_none(categorical_columns)] if categorical_columns else [], categorical_columns))
+            with cc2: values_col = st.selectbox("Values Column (Numeric):", numeric_columns, key=f'{chart_type}_values', index=numeric_columns.index(get_selection(chart_type, "values_col", first_or_none(numeric_columns), numeric_columns)) if numeric_columns else 0)
+            with cc3: color_col = st.selectbox("Color by (Optional):", [None] + all_columns, key=f'{chart_type}_color', index=([None] + all_columns).index(get_selection(chart_type, "color_col", None, [None] + all_columns)))
+            if path_cols and values_col:
+                current_chart_opts.update({"path_cols": path_cols, "values_col": values_col, "color_col": color_col, "chart_title": chart_title})
+                try: fig = px.treemap(df, path=path_cols, values=values_col, color=color_col, **plot_kwargs)
+                except Exception as e: st.error(f"Error creating Treemap: {e}. Ensure path columns form valid hierarchy and values are numeric.")
+
+        # Map (Geographical)
+        elif chart_type == "Map (Geographical)":
+            st.info("Select Latitude and Longitude columns (must be numeric). Optionally add columns for color, size, or hover text.")
+            # Attempt to auto-detect lat/lon columns
+            lat_guess = first_or_none([col for col in numeric_columns if 'lat' in col.lower() or 'latitude' in col.lower()])
+            lon_guess = first_or_none([col for col in numeric_columns if 'lon' in col.lower() or 'lng' in col.lower() or 'longitude' in col.lower()])
+
+            cc1, cc2, cc3, cc4 = st.columns(4)
+            with cc1: lat_col = st.selectbox("Latitude Column:", numeric_columns, key=f'{chart_type}_lat', index=numeric_columns.index(get_selection(chart_type, "lat_col", lat_guess, numeric_columns)) if lat_guess and numeric_columns else 0 if numeric_columns else 0)
+            with cc2: lon_col = st.selectbox("Longitude Column:", numeric_columns, key=f'{chart_type}_lon', index=numeric_columns.index(get_selection(chart_type, "lon_col", lon_guess, numeric_columns)) if lon_guess and numeric_columns else (1 if len(numeric_columns) > 1 else 0) if numeric_columns else 0)
+            with cc3: color_col = st.selectbox("Color by (Optional):", [None] + all_columns, key=f'{chart_type}_color', index=([None] + all_columns).index(get_selection(chart_type, "color_col", None, [None] + all_columns)))
+            with cc4: size_col = st.selectbox("Size by (Numeric, Optional):", [None] + numeric_columns, key=f'{chart_type}_size', index=([None] + numeric_columns).index(get_selection(chart_type, "size_col", None, [None] + numeric_columns)))
+            hover_name_col = st.selectbox("Hover Name (Main Label, Optional):", [None] + all_columns, key=f'{chart_type}_hover_name', index=([None] + all_columns).index(get_selection(chart_type, "hover_name_col", None, [None] + all_columns)))
+            
+            if lat_col and lon_col:
+                current_chart_opts.update({"lat_col": lat_col, "lon_col": lon_col, "color_col": color_col, "size_col": size_col, "hover_name_col": hover_name_col, "chart_title": chart_title})
+                try:
+                    fig = px.scatter_mapbox(df, lat=lat_col, lon=lon_col, color=color_col, size=size_col,
+                                            hover_name=hover_name_col, mapbox_style="open-street-map", 
+                                            zoom=3, height=600, **plot_kwargs)
+                    fig.update_layout(margin={"r":0,"t":30,"l":0,"b":0})
+                except Exception as e: st.error(f"Error creating Map: {e}. Ensure Latitude and Longitude are valid numeric columns.")
+        
+        # Correlation Heatmap
+        elif chart_type == "Correlation Heatmap":
+            st.info("This chart displays pairwise correlations of all numeric columns in your dataset.")
+            if len(numeric_columns) > 1:
+                current_chart_opts.update({"chart_title": chart_title}) # Only title applies here
+                try:
+                    corr_matrix = df[numeric_columns].corr()
+                    fig = px.imshow(corr_matrix, text_auto=".2f", aspect="auto", 
+                                    color_continuous_scale='RdBu_r', **plot_kwargs) # .2f for 2 decimal places
+                except Exception as e: st.error(f"Error creating Correlation Heatmap: {e}")
+            else:
+                st.warning("At least two numeric columns are required for a correlation heatmap.")
+        
+        # Store current selections for the active chart type
+        st.session_state.chart_options[chart_type] = current_chart_opts
+
+
+    # --- Display Plot and Download Link ---
+    st.markdown("---")
+    st.subheader("🖼️ Your Visualization")
+    if fig:
+        st.plotly_chart(fig, use_container_width=True)
+        st.markdown("<br>", unsafe_allow_html=True) # Add some space before download
+        generate_html_download_link(fig, filename=f"{chart_type.lower().replace(' ', '_')}_plot.html")
+    else:
+        st.info(f"Please configure the options for the **{chart_type}** to generate the plot. Ensure all required columns are selected and valid for the chosen chart type.")
 
 else:
-    df = st.session_state.processed_df # Use the processed dataframe for all tabs
-    numeric_cols, categorical_cols, datetime_cols = get_column_types(df)
-    all_columns = df.columns.tolist()
-
-    tab1, tab2, tab3 = st.tabs(["📖 Data Overview", "🛠️ Preprocessing", "📊 Visualization"])
-
-    with tab1:
-        st.header("Data Overview")
-        st.subheader(f"Displaying: {st.session_state.selected_sheet if st.session_state.selected_sheet else uploaded_file.name}")
-
-        st.dataframe(df.head(10))
+    # --- Welcome Message when no file is loaded ---
+    st.header("Welcome to ExcelViz Pro!")
+    st.markdown("""
+        Transform your raw data into insightful visualizations with just a few clicks! 
+        Please upload your data file (Excel, CSV, TSV, or JSON) using the **sidebar on the left** to begin your analysis.
         
-        col1, col2 = st.columns(2)
-        with col1:
-            st.metric("Number of Rows", df.shape[0])
-        with col2:
-            st.metric("Number of Columns", df.shape[1])
+        Once your file is loaded, you'll be able to:
+        * Preview your data and see quick statistical insights.
+        * Choose from a wide variety of chart types.
+        * Customize the appearance of your plots.
+        * Download your visualizations as interactive HTML files.
 
-        with st.expander("Column Details & Statistics"):
-            st.write("**Column Data Types:**")
-            st.dataframe(df.dtypes.astype(str).to_frame(name='Data Type'))
-            st.write("**Descriptive Statistics (Numeric Columns):**")
-            if numeric_cols:
-                st.dataframe(df[numeric_cols].describe().T)
-            else:
-                st.info("No numeric columns found for descriptive statistics.")
-            st.write("**Missing Values per Column:**")
-            missing_values = df.isnull().sum().to_frame(name='Missing Count')
-            missing_values = missing_values[missing_values['Missing Count'] > 0]
-            if not missing_values.empty:
-                st.dataframe(missing_values)
-            else:
-                st.success("No missing values found in the dataset! 🎉")
-
-
-    with tab2:
-        st.header("Data Preprocessing")
-        st.info("Changes made here will reflect in the 'Visualization' tab. Original data remains unchanged until processing.")
-
-        # Make a copy to ensure modifications in this tab don't affect the original st.session_state.df unintentionally before applying
-        # df_to_process = st.session_state.processed_df.copy()
-
-        st.subheader("1. Handle Missing Values")
-        col_to_handle_na = st.selectbox("Select column with missing values:", [None] + all_columns, key="na_col_select")
-        if col_to_handle_na and df[col_to_handle_na].isnull().any():
-            st.write(f"Column '{col_to_handle_na}' has {df[col_to_handle_na].isnull().sum()} missing values.")
-            na_strategy = st.selectbox("Choose strategy:", ["None", "Drop Rows with NA", "Fill with Mean (Numeric only)", "Fill with Median (Numeric only)", "Fill with Mode", "Fill with Custom Value"])
-
-            custom_fill_value = None
-            if na_strategy == "Fill with Custom Value":
-                custom_fill_value = st.text_input("Enter custom value to fill NA:")
-
-            if st.button("Apply NA Handling", key="apply_na"):
-                df_copy = st.session_state.processed_df.copy() # Operate on the current state of processed_df
-                if na_strategy == "Drop Rows with NA":
-                    df_copy.dropna(subset=[col_to_handle_na], inplace=True)
-                elif na_strategy == "Fill with Mean (Numeric only)":
-                    if col_to_handle_na in numeric_cols:
-                        df_copy[col_to_handle_na].fillna(df_copy[col_to_handle_na].mean(), inplace=True)
-                    else:
-                        st.error("Mean filling only applicable to numeric columns.")
-                elif na_strategy == "Fill with Median (Numeric only)":
-                    if col_to_handle_na in numeric_cols:
-                        df_copy[col_to_handle_na].fillna(df_copy[col_to_handle_na].median(), inplace=True)
-                    else:
-                        st.error("Median filling only applicable to numeric columns.")
-                elif na_strategy == "Fill with Mode":
-                    df_copy[col_to_handle_na].fillna(df_copy[col_to_handle_na].mode()[0], inplace=True) # mode() can return multiple values
-                elif na_strategy == "Fill with Custom Value" and custom_fill_value is not None:
-                    try:
-                        # Attempt to convert custom value to column's original type (simple approach)
-                        original_dtype = df_copy[col_to_handle_na].dtype
-                        converted_value = pd.Series([custom_fill_value]).astype(original_dtype).iloc[0]
-                        df_copy[col_to_handle_na].fillna(converted_value, inplace=True)
-                    except Exception as e:
-                        st.error(f"Error converting custom value or filling: {e}. Try matching the column's data type.")
-                st.session_state.processed_df = df_copy # Update session state
-                st.success(f"NA handling '{na_strategy}' applied to '{col_to_handle_na}'.")
-                st.experimental_rerun() # Rerun to reflect changes immediately
-        elif col_to_handle_na:
-            st.success(f"Column '{col_to_handle_na}' has no missing values.")
-
-
-        st.subheader("2. Change Column Data Type")
-        col_to_change_type = st.selectbox("Select column to change type:", [None] + all_columns, key="type_col_select")
-        if col_to_change_type:
-            current_type = df[col_to_change_type].dtype
-            st.write(f"Current type of '{col_to_change_type}': **{current_type}**")
-            new_type_str = st.selectbox("Select new data type:", ["None", "object (string)", "int64", "float64", "boolean", "datetime64[ns]"])
-
-            if st.button("Apply Type Change", key="apply_type"):
-                df_copy = st.session_state.processed_df.copy()
-                try:
-                    if new_type_str != "None":
-                        if new_type_str == "datetime64[ns]":
-                             df_copy[col_to_change_type] = pd.to_datetime(df_copy[col_to_change_type], errors='coerce')
-                        else:
-                             df_copy[col_to_change_type] = df_copy[col_to_change_type].astype(new_type_str)
-                        st.session_state.processed_df = df_copy
-                        st.success(f"Column '{col_to_change_type}' changed to {new_type_str}.")
-                        st.experimental_rerun()
-                except Exception as e:
-                    st.error(f"Error changing type for '{col_to_change_type}': {e}")
-        
-        st.subheader("3. Reset Processed Data")
-        if st.button("Reset to Original Uploaded Data", key="reset_data"):
-            st.session_state.processed_df = st.session_state.df.copy() if st.session_state.df is not None else None
-            st.success("Data reset to its original uploaded state.")
-            st.experimental_rerun()
-
-
-    with tab3:
-        st.header("Data Visualization")
-        if not all_columns:
-            st.warning("No columns available for visualization. Check your data.")
-        else:
-            chart_type = st.selectbox(
-                "Select Chart Type:",
-                [
-                    "Select...", "Line Chart", "Bar Chart", "Pie Chart", "Scatter Plot",
-                    "Histogram", "Box Plot", "Area Chart", "Heatmap (Correlation)",
-                    "Funnel Chart", "Sunburst Chart", "Treemap", "Map (Geographical)"
-                ]
-            )
-            fig = None
-
-            if chart_type == "Line Chart":
-                x_ax = st.selectbox("X-axis (often Time/Index):", [None] + all_columns, key="line_x")
-                y_ax_multi = st.multiselect("Y-axis (Numeric):", numeric_cols, key="line_y")
-                color_col = st.selectbox("Color by (Categorical, Optional):", [None] + categorical_cols, key="line_color")
-                if x_ax and y_ax_multi:
-                    fig = px.line(df, x=x_ax, y=y_ax_multi, color=color_col, title=f"{', '.join(y_ax_multi)} over {x_ax}")
-
-            elif chart_type == "Bar Chart":
-                x_ax = st.selectbox("X-axis (Categorical/Dimension):", [None] + categorical_cols + datetime_cols, key="bar_x")
-                y_ax = st.selectbox("Y-axis (Numeric/Measure):", [None] + numeric_cols, key="bar_y")
-                color_col = st.selectbox("Color by (Categorical, Optional):", [None] + categorical_cols, key="bar_color")
-                barmode = st.selectbox("Bar Mode (Optional):", ["group", "stack", "relative", "overlay"], index=0, key="bar_mode")
-                if x_ax and y_ax:
-                    fig = px.bar(df, x=x_ax, y=y_ax, color=color_col, title=f"{y_ax} by {x_ax}", barmode=barmode)
-
-            elif chart_type == "Pie Chart":
-                names_col = st.selectbox("Labels/Names (Categorical):", [None] + categorical_cols, key="pie_names")
-                values_col = st.selectbox("Values (Numeric):", [None] + numeric_cols, key="pie_values")
-                if names_col and values_col:
-                    fig = px.pie(df, names=names_col, values=values_col, title=f"Distribution by {names_col}")
-
-            elif chart_type == "Scatter Plot":
-                x_ax = st.selectbox("X-axis (Numeric):", [None] + numeric_cols + datetime_cols, key="scatter_x")
-                y_ax = st.selectbox("Y-axis (Numeric):", [None] + numeric_cols, key="scatter_y")
-                color_col = st.selectbox("Color by (Optional):", [None] + all_columns, key="scatter_color")
-                size_col = st.selectbox("Size by (Numeric, Optional):", [None] + numeric_cols, key="scatter_size")
-                if x_ax and y_ax:
-                    fig = px.scatter(df, x=x_ax, y=y_ax, color=color_col, size=size_col, title=f"{y_ax} vs {x_ax}")
-
-            elif chart_type == "Histogram":
-                x_ax = st.selectbox("Column to plot (Numeric):", [None] + numeric_cols, key="hist_x")
-                color_col = st.selectbox("Color by (Categorical, Optional):", [None] + categorical_cols, key="hist_color")
-                nbins = st.slider("Number of Bins (Optional):", 5, 100, 20, key="hist_bins")
-                if x_ax:
-                    fig = px.histogram(df, x=x_ax, color=color_col, nbins=nbins, title=f"Distribution of {x_ax}")
-
-            elif chart_type == "Box Plot":
-                y_ax = st.multiselect("Y-axis / Values (Numeric):", numeric_cols, key="box_y")
-                x_ax = st.selectbox("X-axis / Categories (Categorical, Optional):", [None] + categorical_cols + datetime_cols, key="box_x")
-                color_col = st.selectbox("Color by (Categorical, Optional):", [None] + categorical_cols, key="box_color")
-                if y_ax:
-                    fig = px.box(df, y=y_ax, x=x_ax, color=color_col, title="Box Plot")
-
-            elif chart_type == "Area Chart":
-                x_ax = st.selectbox("X-axis (often Time/Index):", [None] + all_columns, key="area_x")
-                y_ax_multi = st.multiselect("Y-axis (Numeric):", numeric_cols, key="area_y")
-                color_col = st.selectbox("Color by (Categorical, Optional):", [None] + categorical_cols, key="area_color")
-                if x_ax and y_ax_multi:
-                    fig = px.area(df, x=x_ax, y=y_ax_multi, color=color_col, title=f"Area chart of {', '.join(y_ax_multi)} over {x_ax}")
-
-            elif chart_type == "Heatmap (Correlation)":
-                st.info("This heatmap shows the Pearson correlation between numeric columns.")
-                if len(numeric_cols) > 1:
-                    corr_matrix = df[numeric_cols].corr()
-                    fig = px.imshow(corr_matrix, text_auto=True, aspect="auto", title="Correlation Heatmap")
-                else:
-                    st.warning("At least two numeric columns are needed for a correlation heatmap.")
-            
-            elif chart_type in ["Sunburst Chart", "Treemap"]:
-                path_cols = st.multiselect(f"Path / Hierarchy (Categorical, from root to leaf):", categorical_cols, key=f"{chart_type}_path")
-                values_col = st.selectbox(f"Values (Numeric):", [None] + numeric_cols, key=f"{chart_type}_values")
-                color_col = st.selectbox(f"Color by (Optional):", [None] + all_columns, key=f"{chart_type}_color") # Can be numeric for continuous color or categorical
-                if path_cols and values_col:
-                    if chart_type == "Sunburst Chart":
-                        fig = px.sunburst(df, path=path_cols, values=values_col, color=color_col, title=f"Sunburst: {values_col} by {', '.join(path_cols)}")
-                    else: # Treemap
-                        fig = px.treemap(df, path=path_cols, values=values_col, color=color_col, title=f"Treemap: {values_col} by {', '.join(path_cols)}")
-            
-            elif chart_type == "Funnel Chart":
-                x_values = st.selectbox("Values (Numeric, e.g., counts at each stage):", [None] + numeric_cols, key="funnel_x")
-                y_stages = st.selectbox("Stages (Categorical):", [None] + categorical_cols, key="funnel_y")
-                color_stages = st.selectbox("Color by Stages (Optional, usually same as Y-axis):", [None] + categorical_cols, key="funnel_color")
-                if x_values and y_stages:
-                     # For a meaningful funnel, data usually needs to be sorted by stage or be aggregated.
-                    # This simple version plots directly.
-                    fig = px.funnel(df, x=x_values, y=y_stages, color=color_stages if color_stages else y_stages, title=f"Funnel: {x_values} by {y_stages}")
-
-
-            elif chart_type == "Map (Geographical)":
-                st.info("Requires columns with Latitude and Longitude data.")
-                lat_col_options = [None] + numeric_cols
-                lon_col_options = [None] + numeric_cols
-
-                # Attempt to pre-select common names
-                lat_guess = next((c for c in numeric_cols if 'lat' in c.lower()), None)
-                lon_guess = next((c for c in numeric_cols if 'lon' in c.lower() or 'lng' in c.lower()), None)
-
-                lat_idx = lat_col_options.index(lat_guess) if lat_guess else 0
-                lon_idx = lon_col_options.index(lon_guess) if lon_guess else (1 if len(lon_col_options) > 1 else 0)
-
-
-                lat_col = st.selectbox("Latitude Column (Numeric):", lat_col_options, index=lat_idx, key="map_lat")
-                lon_col = st.selectbox("Longitude Column (Numeric):", lon_col_options, index=lon_idx, key="map_lon")
-                color_col = st.selectbox("Color by (Optional):", [None] + all_columns, key="map_color")
-                size_col = st.selectbox("Size by (Numeric, Optional):", [None] + numeric_cols, key="map_size")
-                hover_name_col = st.selectbox("Hover Label (Optional):", [None] + all_columns, key="map_hover_name")
-                
-                if lat_col and lon_col:
-                    df_map = df.dropna(subset=[lat_col, lon_col]) # Drop rows where lat/lon is NA
-                    if not df_map.empty:
-                        fig = px.scatter_mapbox(df_map, lat=lat_col, lon=lon_col, color=color_col, size=size_col,
-                                                hover_name=hover_name_col,
-                                                mapbox_style="open-street-map", zoom=2, height=600,
-                                                title="Geographical Map")
-                        fig.update_layout(margin={"r":0,"t":30,"l":0,"b":0})
-                    else:
-                        st.warning("No valid data points after removing NA from latitude/longitude columns.")
-
-
-            # Display the plot and download link
-            if fig:
-                st.plotly_chart(fig, use_container_width=True)
-                download_filename = f"{chart_type.lower().replace(' ', '_')}_plot.html"
-                st.markdown(generate_download_link(fig, download_filename, f"📥 Download '{chart_type}' Plot (HTML)", is_figure=True), unsafe_allow_html=True)
-            elif chart_type != "Select...":
-                st.info("Configure the chart options above to generate a visualization.")
+        **Our Goal:** "See Clearly, Decide Confidently: Transforming Data into Insight."
+    """)
+    st.info("💡 Tip: Check out the 'About & Help' section in the sidebar for FAQs and more information about ExcelViz Pro.")
